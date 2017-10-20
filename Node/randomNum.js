@@ -13,7 +13,7 @@ var url = require("url");
 // we created in the lines above.
 // Finally, you can see that the callback method receives a 'request'
 // and 'response' object automatically.  This should be familiar
-// to any PHP or Java programmer.
+// to any PHP or Java programmer.bnnn
 http.createServer(function(request, response) {
 
     // The response needs to handle all the headers, and the return codes
