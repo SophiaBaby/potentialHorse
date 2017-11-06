@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Title</title>
+</head>
+<body>
+<h1><span class=“Apple-style-span” style=“font-size: 20px;”>前言</span></h1>
+<br/>在《The Node Beginner Book》的中文版（<a href=“http://nodebeginner.org/index-zh-cn.html”>http://nodebeginner.org/index-zh-cn.html</a>）发布之后，获得国内的好评。也有同学觉得这本书略薄，没有包含进阶式的例子。<a href=“http://www.weibo.com/n/otakustay”>@otakustay</a>同学说：“确实，我的想法是在这之上补一个简单的MVC框架和一个StaticFile+Mimetype+CacheControl机制，可以成为一个更全面的教程”。正巧的是目前我手里的V5项目有一些特殊性：
+<br/><ol>
+    <br/>	<li>项目大多数的文件都是属于静态文件，只有数据部分存在动态请求</li>
+    <br/>	<li>数据部分的请求都呈现为RESTful的特性</li>
+    <br/></ol>
+<br/>那么我之前写的Node_CI框架跟V5搭配起来感觉就有那么一点点怪怪的。所以我决定改造Node_CI框架，使之更适合V5前端的使用。原有的Node_CI项目继续保留着，新开项目为V5Node，同时在改造这个框架的过程完成@otakustay 同学提到的几点进阶部分，也算是对我自己学习Node的总结。
+<br/>
+<br/>这个项目主要包含的两个部分就是静态服务器和RESTful服务器。
+<br/><h2>第一部分 静态文件服务器</h2>
+<br/>既是一个新的项目，那么创建v5node目录是应该的。既是一个Node应用，创建一个app.js文件也是应该的。
+<br/>
+<br/>如果你有认真读完《The Node Beginner Book》或是看到过Nodejs官方网站上的那段经典代码，那么你对下面这段代码应当是非常不陌生的。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var http = require(“http”);
+<br/>http.createServer(function(request, response) {
+<br/>  response.writeHead(200, {“Content-Type”: “text/plain”});
+<br/>  response.write(“Hello World”);
+<br/>  response.end();
+<br/>}).listen(8888);</pre>
+<br/>那么我们的app.js文件里的结构也很明确了。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var PORT = 8000;
+<br/>
+<br/>var http = require(‘http’);
+<br/>var server = http.createServer(function(request, response) {
+<br/>// TODO
+<br/>});
+<br/>
+<br/>server.listen(PORT);
+<br/>console.log(“Server runing at port: " + PORT + “.”);</pre>
+<br/>因为当前要实现的功能是静态文件服务器，那么以Apache为例，让我们回忆一下静态文件服务器都有哪些功能。
+<br/>
+<br/>浏览器发送URL，服务端解析URL，对应到硬盘上的文件。如果文件存在，返回200状态码，并发送文件到浏览器端；如果文件不存在，返回404状态码，发送一个404的文件到浏览器端。
+<br/>
+<br/>以下两图是Apache经典的两种状态。
+<br/>
+<br/><a href=“http://static.data.taobaocdn.com/up/nodeclub/2011/11/found.png”><img class=“alignnone size-medium wp-image-3905” title=“found” src=“http://static.data.taobaocdn.com/up/nodeclub/2011/11/found-300x176.png” alt=”" width=“300” height=“176” /></a><a href=“http://static.data.taobaocdn.com/up/nodeclub/2011/11/notfound.png”><img class=“alignnone size-medium wp-image-3906” title=“notfound” src=“http://static.data.taobaocdn.com/up/nodeclub/2011/11/notfound-300x176.png” alt="" width=“300” height=“176” /></a>
+<br/>
+<br/>现在cases已经明了，那么我们开始实现吧。
+<br/><h3>实现路由</h3>
+<br/>路由部分的实现在《The Node Beginner Book》已经被描述过，此处不例外。
+<br/>
+<br/>添加url模块是必要的。然后解析pathname。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var url = require(“url”);
+<br/>var pathname = url.parse(request.url).pathname;</pre>
+<br/>以下是实现代码：
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var server = http.createServer(function(request, response) {
+<br/>    var pathname = url.parse(request.url).pathname;
+<br/>    response.write(pathname);
+<br/>    response.end();
+<br/>});</pre>
+<br/>现在的代码是向浏览器端输出请求的路径，类似一个echo服务器。接下来我们为其添加输出对应文件的功能。
+<br/><h3>读取静态文件</h3>
+<br/>为了不让用户在浏览器端通过请求/app.js查看到我们的代码，我们设定用户只能请求assets目录下的文件。服务器会将路径信息映射到assets目录。
+<br/>
+<br/>涉及到了文件读取的这部分，自然不能避开fs(file system)这个模块。那么引入fs模块吧。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var fs = require(“fs”);</pre>
+<br/>同样，涉及到了路径处理，path模块也是需要的。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var path = require(“path”);</pre>
+<br/>我们通过path模块的path.exists方法来判断静态文件是否存在磁盘上。不存在我们直接响应给客户端404错误。
+<br/>
+<br/>如果文件存在则调用fs.readFile方法读取文件。如果发生错误，我们响应给客户端500错误，表明存在内部错误。正常状态下则发送读取到的文件给客户端，表明200状态。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var server = http.createServer(function(request, response) {
+<br/>    var pathname = url.parse(request.url).pathname;
+<br/>    var realPath = “assets” + pathname;
+<br/>
+<br/>    path.exists(realPath, function (exists) {
+<br/>        if (!exists) {
+<br/>            response.writeHead(404, {‘Content-Type’: ‘text/plain’});
+<br/>            response.write(“This request URL " + pathname + " was not found on this server.”);
+<br/>            response.end();
+<br/>        } else {
+<br/>            fs.readFile(realPath, “binary”, function(err, file) {
+<br/>                if (err) {
+<br/>                    response.writeHead(500, {‘Content-Type’: ‘text/plain’});
+<br/>                    response.end(err);
+<br/>                } else {
+<br/>                    response.writeHead(200, {‘Content-Type’: ‘text/html’});
+<br/>                    response.write(file, “binary”);
+<br/>                    response.end();
+<br/>                }
+<br/>             });
+<br/>          }
+<br/>      });
+<br/>});</pre>
+<br/>以上这段简单的代码加上一个assets目录，就构成了我们最基本的静态文件服务器。
+<br/>
+<br/>那么眼尖的你且看看，这个最基本的静态文件服务器存在哪些问题呢？答案是MIME类型支持。因为我们的服务器同时要存放html, css, js, png, gif, jpg等等文件。并非每一种文件的MIME类型都是text/html的。
+<br/><h3>MIME类型支持</h3>
+<br/>像其他服务器一样，支持MIME的话，就得一张映射表。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>exports.types = {
+<br/>  “css”: “text/css”,
+<br/>  “gif”: “image/gif”,
+<br/>  “html”: “text/html”,
+<br/>  “ico”: “image/x-icon”,
+<br/>  “jpeg”: “image/jpeg”,
+<br/>  “jpg”: “image/jpeg”,
+<br/>  “js”: “text/javascript”,
+<br/>  “json”: “application/json”,
+<br/>  “pdf”: “application/pdf”,
+<br/>  “png”: “image/png”,
+<br/>  “svg”: “image/svg+xml”,
+<br/>  “swf”: “application/x-shockwave-flash”,
+<br/>  “tiff”: “image/tiff”,
+<br/>  “txt”: “text/plain”,
+<br/>  “wav”: “audio/x-wav”,
+<br/>  “wma”: “audio/x-ms-wma”,
+<br/>  “wmv”: “video/x-ms-wmv”,
+<br/>  “xml”: “text/xml”
+<br/>};</pre>
+<br/>以上代码另存在mime.js文件中。该文件仅仅只列举了一些常用的MIME类型，以文件后缀作为key，MIME类型为value。那么引入mime.js文件吧。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var mime = require("./mime").types;</pre>
+<br/>我们通过path.extname来获取文件的后缀名。由于extname返回值包含”.”，所以通过slice方法来剔除掉”.”，对于没有后缀名的文件，我们一律认为是unknown。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var ext = path.extname(realPath);
+<br/>ext = ext ? ext.slice(1) : ‘unknown’;</pre>
+<br/>接下来我们很容易得到真正的MIME类型了。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var ext = path.extname(realPath);
+<br/>ext = ext ? ext.slice(1) : ‘unknown’;
+<br/>var contentType = mime[ext] || “text/plain”;
+<br/>response.writeHead(200, {‘Content-Type’: contentType});
+<br/>response.write(file, “binary”);
+<br/>response.end();</pre>
+<br/>对于未知的类型，我们一律返回text/plain类型。
+<br/><h3>缓存支持/控制</h3>
+<br/>在MIME支持之后，静态文件服务器看起来已经很完美了。任何静态文件只要丢进assets目录之后就可以万事大吉不管了。看起来已经达到了Apache作为静态文件服务器的相同效果了。我们实现这样的服务器用的代码只有这么多行而已。是不是很简单呢？
+<br/>
+<br/>但是，我们发现用户在每次请求的时候，服务器每次都要调用fs.readFile方法去读取硬盘上的文件的。当服务器的请求量一上涨，硬盘IO会吃不消的。
+<br/>
+<br/>在解决这个问题之前，我们有必要了解一番前端浏览器缓存的一些机制和提高性能的方案。
+<br/><ol>
+    <br/>	<li>Gzip压缩文件可以减少响应的大小，能够达到节省带宽的目的。</li>
+    <br/>	<li>浏览器缓存中存有文件副本的时候，不能确定有效的时候，会生成一个条件get请求
+    <br/><ol>
+        <br/>	<li>在请求的头中会包含 If-Modified-Since</li>
+        <br/>	<li>如果服务器端文件在这个时间后发生过修改，则发送整个文件给前端。</li>
+        <br/>	<li>如果没有修改，则返回304状态码。并不发送整个文件给前端。</li>
+        <br/>	<li>另外一种判断机制是ETag。在此并不讨论。</li>
+        <br/>	<li>如果副本有效，这个get请求都会省掉。判断有效的最主要的方法是服务端响应的时候带上Expires的头。
+        <br/><ol>
+            <br/>	<li>浏览器会判断Expires头，直到制定的日期过期，才会发起新的请求。</li>
+            <br/>	<li>另一个可以达到相同目的的方法是返回Cache-Control: max-age=xxxx。</li>
+            <br/></ol>
+        <br/></li>
+        <br/></ol>
+    <br/></li>
+    <br/></ol>
+<br/>欲了解更多缓存机制，请参见Steve Sounders著作的《高性能网站建设指南》。
+<br/>
+<br/>为了简化问题，我们只做如下这几件事情：
+<br/><ol>
+    <br/>	<li>为指定几种后缀的文件，在响应时添加Expires头和Cache-Control: max-age头。超时日期设置为1年。</li>
+    <br/>	<li>由于这是静态文件服务器，为所有请求，响应时返回Last-Modified头。</li>
+    <br/>	<li>为带If-Modified-Since的请求头，做日期检查，如果没有修改，则返回304。若修改，则返回文件。</li>
+    <br/></ol>
+<br/>对于以上的静态文件服务器，Node给的响应头是十分简单的：
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>Connection: keep-alive
+<br/>Content-Type: text/html
+<br/>Transfer-Encoding:  chunked</pre>
+<br/>那么我们搞起吧。
+<br/>
+<br/>对于指定后缀文件和过期日期，为了保证可配置。那么建立一个config.js文件是应该的。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>exports.Expires = {
+<br/>    fileMatch: /^(gif|png|jpg|js|css)$/ig,
+<br/>    maxAge: 606024365
+<br/>};</pre>
+<br/>引入config.js文件。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var config = require("./config");</pre>
+<br/>我们在相应之前判断后缀名是否符合我们要添加过期时间头的条件。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var ext = path.extname(realPath);
+<br/>ext = ext ? ext.slice(1) : ‘unknown’;
+<br/>
+<br/>if (ext.match(config.Expires.fileMatch)) {
+<br/>    var expires = new Date();
+<br/>    expires.setTime(expires.getTime() + config.Expires.maxAge * 1000);
+<br/>    response.setHeader(“Expires”, expires.toUTCString());
+<br/>    response.setHeader(“Cache-Control”, “max-age=” + config.Expires.maxAge);
+<br/>}</pre>
+<br/>这次的响应头中多了两个header。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>Cache-Control: max-age=31536000
+<br/>Connection: keep-alive
+<br/>Content-Type: image/png
+<br/>Expires: Fri, 09 Nov 2012 12:55:41 GMT
+<br/>Transfer-Encoding: chunked</pre>
+<br/>浏览器在发送请求之前由于检测到Cache-Control和Expires（Cache-Control的优先级高于Expires，但有的浏览器不支持Cache-Control，这时采用Expires），如果没有过期，则不会发送请求，而直接从缓存中读取文件。
+<br/>
+<br/>接下来我们为所有请求的响应都添加Last-Modified头。
+<br/>
+<br/>读取文件的最后修改时间是通过fs模块的fs.stat()方法来实现的。关于stat的详细介绍请参见此处：<a href=“http://www.cnitblog.com/guopingleee/archive/2008/11/13/51411.aspx”>http://www.cnitblog.com/guopingleee/archive/2008/11/13/51411.aspx</a>
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>fs.stat(realPath, function (err, stat) {
+<br/>    var lastModified = stat.mtime.toUTCString();
+<br/>    response.setHeader(“Last-Modified”, lastModified);
+<br/>});</pre>
+<br/>我们同时也要检测浏览器是否发送了If-Modified-Since请求头。如果发送而且跟文件的修改时间相同的话，我们返回304状态。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>if (request.headers[ifModifiedSince] && lastModified == request.headers[ifModifiedSince]) {
+<br/>    response.writeHead(304, “Not Modified”);
+<br/>    response.end();
+<br/>}</pre>
+<br/>如果没有发送或者跟磁盘上的文件修改时间不相符合，则发送回磁盘上的最新文件。
+<br/>
+<br/>此时的代码大致如下：
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var server = http.createServer(function(request, response) {
+<br/>    var pathname = url.parse(request.url).pathname;console.log(pathname);
+<br/>    var realPath = path.join(“assets”, pathname);
+<br/>
+<br/>    path.exists(realPath, function (exists) {
+<br/>        if (!exists) {
+<br/>            response.writeHead(404, “Not Found”, {‘Content-Type’: ‘text/plain’});
+<br/>            response.write(“This request URL " + pathname + " was not found on this server.”);
+<br/>            response.end();
+<br/>        } else {
+<br/>            var ext = path.extname(realPath);
+<br/>            ext = ext ? ext.slice(1) : ‘unknown’;
+<br/>            var contentType = mime[ext] || “text/plain”;
+<br/>            response.setHeader(“Content-Type”, contentType);
+<br/>
+<br/>            fs.stat(realPath, function (err, stat) {
+<br/>                var lastModified = stat.mtime.toUTCString();
+<br/>                var ifModifiedSince = “If-Modified-Since”.toLowerCase();
+<br/>                response.setHeader(“Last-Modified”, lastModified);
+<br/>
+<br/>                if (ext.match(config.Expires.fileMatch)) {
+<br/>                    var expires = new Date();
+<br/>                    expires.setTime(expires.getTime() + config.Expires.maxAge * 1000);
+<br/>                    response.setHeader(“Expires”, expires.toUTCString());
+<br/>                    response.setHeader(“Cache-Control”, “max-age=” + config.Expires.maxAge);
+<br/>                }
+<br/>
+<br/>                if (request.headers[ifModifiedSince] && lastModified == request.headers[ifModifiedSince]) {
+<br/>                    response.writeHead(304, “Not Modified”);
+<br/>                    response.end();
+<br/>                } else {
+<br/>                    fs.readFile(realPath, “binary”, function(err, file) {
+<br/>                        if (err) {
+<br/>                            response.writeHead(500, “Internal Server Error”, {‘Content-Type’: ‘text/plain’});
+<br/>                            response.end(err);
+<br/>                        } else {
+<br/>                            response.writeHead(200, “Ok”);
+<br/>                            response.write(file, “binary”);
+<br/>                            response.end();
+<br/>                        }
+<br/>                    });
+<br/>                }
+<br/>            });
+<br/>        }
+<br/>    });
+<br/>});</pre>
+<br/>通过Expires和Last-Modified两个方案以及与浏览器之间的通力合作，会节省相当大的一部分网络流量，同时也会降低部分硬盘IO的请求。如果在这之前还存在CDN的话，整个solution就比较完美了。
+<br/>
+<br/>由于Expires和Max-Age都是由浏览器来进行判断的，如果判断成功，http请求都不会发送到服务端的，这里只能通过fiddler和浏览器配合进行测试。但是Last-Modified却是可以通过curl来进行测试的。
+<br/><pre class=“brush: bash; gutter: true; first-line: 1”>curl --header “If-Modified-Since: Fri, 11 Nov 2011 19:14:51 GMT” -i http://localhost:8000</pre>
+<br/>结果：
+<br/><pre class=“brush: bash; gutter: true; first-line: 1”>HTTP/1.1 304 Not Modified
+<br/>Content-Type: text/html
+<br/>Last-Modified: Fri, 11 Nov 2011 19:14:51 GMT
+<br/>Connection: keep-alive</pre>
+<br/>注意，我们看到这个304请求的响应是不带body信息的。所以，达到我们节省带宽的需求。只需几行代码，就可以替老板省下许多的带宽费用，咱们程序员是有力量的。
+<br/>
+<br/>但是，貌似我们有提到gzip这样的东西。对于CSS,JS等文件如果不采用gzip的话，还是会浪费掉部分网络带宽。那么接下来把gzip搞起吧。
+<br/><h3>GZip启用</h3>
+<br/>如果你是前端达人，你应该是知道YUI Compressor或Google Closure Complier这样的压缩工具的。在这基础上，再进行gzip压缩，则会减少很多的网络流量。那么，我们看看Node中，怎么把gzip搞起类。
+<br/>
+<br/>要用到gzip，就需要zlib模块，该模块在Node的0.5.8版本开始原生支持。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var zlib = require(“zlib”);</pre>
+<br/>对于图片一类的文件，不需要进行gzip压缩，所以我们在config.js中配置一个启用压缩的列表。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>exports.Compress = {
+<br/>    match: /css|js|html/ig
+<br/>};</pre>
+<br/>这里为了防止大文件，也为了满足zlib模块的调用模式，将读取文件改为流的形式进行读取。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var raw = fs.createReadStream(realPath);
+<br/>var acceptEncoding = request.headers[‘accept-encoding’] || “”;
+<br/>var matched = ext.match(config.Compress.match);
+<br/>
+<br/>if (matched && acceptEncoding.match(/\bgzip\b/)) {
+<br/>    response.writeHead(200, “Ok”, {‘Content-Encoding’: ‘gzip’});
+<br/>    raw.pipe(zlib.createGzip()).pipe(response);
+<br/>} else if (matched && acceptEncoding.match(/\bdeflate\b/)) {
+<br/>    response.writeHead(200, “Ok”, {‘Content-Encoding’: ‘deflate’});
+<br/>    raw.pipe(zlib.createDeflate()).pipe(response);
+<br/>} else {
+<br/>    response.writeHead(200, “Ok”);
+<br/>    raw.pipe(response);
+<br/>}</pre>
+<br/>对于支持压缩的文件格式以及浏览器端接受gzip或deflate压缩，我们调用压缩。若不，则管道方式转发给response。
+<br/>
+<br/>启用压缩其实就这么简单。如果你有fiddler的话，可以监听一下请求，会看到被压缩的请求。
+<br/>
+<br/>最终app.js文件的代码如下：
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var server = http.createServer(function(request, response) {
+<br/>    var pathname = url.parse(request.url).pathname;
+<br/>    var realPath = path.join(“assets”, pathname);
+<br/>
+<br/>    path.exists(realPath, function (exists) {
+<br/>        if (!exists) {
+<br/>            response.writeHead(404, “Not Found”, {‘Content-Type’: ‘text/plain’});
+<br/>            response.write(“This request URL " + pathname + " was not found on this server.”);
+<br/>            response.end();
+<br/>        } else {
+<br/>            var ext = path.extname(realPath);
+<br/>            ext = ext ? ext.slice(1) : ‘unknown’;
+<br/>            var contentType = mime[ext] || “text/plain”;
+<br/>            response.setHeader(“Content-Type”, contentType);
+<br/>
+<br/>            fs.stat(realPath, function (err, stat) {
+<br/>                var lastModified = stat.mtime.toUTCString();
+<br/>                var ifModifiedSince = “If-Modified-Since”.toLowerCase();
+<br/>                response.setHeader(“Last-Modified”, lastModified);
+<br/>
+<br/>                if (ext.match(config.Expires.fileMatch)) {
+<br/>                    var expires = new Date();
+<br/>                    expires.setTime(expires.getTime() + config.Expires.maxAge * 1000);
+<br/>                    response.setHeader(“Expires”, expires.toUTCString());
+<br/>                    response.setHeader(“Cache-Control”, “max-age=” + config.Expires.maxAge);
+<br/>                }
+<br/>
+<br/>                if (request.headers[ifModifiedSince] && lastModified == request.headers[ifModifiedSince]) {
+<br/>                    response.writeHead(304, “Not Modified”);
+<br/>                    response.end();
+<br/>                } else {
+<br/>                    var raw = fs.createReadStream(realPath);
+<br/>                    var acceptEncoding = request.headers[‘accept-encoding’] || “”;
+<br/>                    var matched = ext.match(config.Compress.match);
+<br/>
+<br/>                    if (matched && acceptEncoding.match(/\bgzip\b/)) {
+<br/>                        response.writeHead(200, “Ok”, {‘Content-Encoding’: ‘gzip’});
+<br/>                        raw.pipe(zlib.createGzip()).pipe(response);
+<br/>                    } else if (matched && acceptEncoding.match(/\bdeflate\b/)) {
+<br/>                        response.writeHead(200, “Ok”, {‘Content-Encoding’: ‘deflate’});
+<br/>                        raw.pipe(zlib.createDeflate()).pipe(response);
+<br/>                    } else {
+<br/>                        response.writeHead(200, “Ok”);
+<br/>                        raw.pipe(response);
+<br/>                    }
+<br/>                }
+<br/>            });
+<br/>        }
+<br/>    });
+<br/>});</pre>
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”></pre>
+<br/>
+<br/>
+<br/>
+<br/><h3>安全问题</h3>
+<br/>
+<br/>我们搞了一大堆的事情，但是安全方面也不能少。想想哪一个地方是最容易出问题的？ 我们发现上面的这段代码写得还是有点纠结的，通常这样纠结的代码我是不愿意拿出去让人看见的。但是，假如一个同学用浏览器访问http://localhost:8000/…/app.js 怎么办捏？ 不用太害怕，浏览器会自动干掉那两个作为父路径的点的。浏览器会把这个路径组装成http://localhost:8000/app.js的，这个文件在assets目录下不存在，返回404 Not Found。 但是文艺一点的同学会通过curl -i http://localhost:8000/…/app.js 来访问。于是，悲剧了。
+<br/>
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”># curl -i http://localhost:8000/…/app.js
+<br/>HTTP/1.1 200 Ok
+<br/>Content-Type: text/javascript
+<br/>Last-Modified: Thu, 10 Nov 2011 17:16:51 GMT
+<br/>Expires: Sat, 10 Nov 2012 04:59:27 GMT
+<br/>Cache-Control: max-age=31536000
+<br/>Connection: keep-alive
+<br/>Transfer-Encoding: chunked
+<br/>
+<br/>var PORT = 8000;
+<br/>var http = require(“http”);
+<br/>var url = require(“url”);
+<br/>var fs = require(“fs”);
+<br/>var path = require(“path”);
+<br/>var mime = require("./mime").types;</pre>
+<br/>那么怎么办呢？暴力点的解决方案就是禁止父路径。
+<br/>
+<br/>首先替换掉所有的…，然后调用path.normalize方法来处理掉不正常的/。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var realPath = path.join(“assets”, path.normalize(pathname.replace(/…/g, “”)));</pre>
+<br/>于是这个时候通过curl -i http://localhost:8000/…/app.js 访问，/…/app.js会被替换掉为//app.js。normalize方法会将//app.js返回为/app.js。再加上真实的assets，就被实际映射为assets/app.js。这个文件不存在，于是返回404。
+<br/>
+<br/>于是搞定父路径问题。与浏览器的行为保持一致。
+<br/><h3>Welcome页的锦上添花</h3>
+<br/>再来回忆一下Apache的常见行为。当进入一个目录路径的时候，会去寻找index.html页面，如果index.html文件不存在，则返回目录索引。目录索引这里我们暂不考虑，如果用户请求的路径是/结尾的，我们就自动为其添加上index.html文件。如果这个文件不存在，继续返回404错误。
+<br/>
+<br/>如果用户请求了一个目录路径，而且没有带上/。那么我们为其添加上/index.html，再重新做解析。
+<br/>
+<br/>那么不喜欢hardcode的你，肯定是要把这个文件配置进config.js啦。这样你就可以选择各种后缀作为welcome页面。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>exports.Welcome = {
+<br/>    file: “index.html”
+<br/>};</pre>
+<br/>那么第一步，为/结尾的请求，自动添加上”index.html”。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>if (pathname.slice(-1) === “/”) {
+<br/>    pathname = pathname + config.Welcome.file;
+<br/>}</pre>
+<br/>第二步，如果请求了一个目录路径，并且没有以/结尾。那么我们需要做判断。如果当前读取的路径是目录，就需要添加上/和index.html
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>if (stats.isDirectory()) {
+<br/>    realPath = path.join(realPath, “/”, config.Welcome.file);
+<br/>}</pre>
+<br/>由于我们目前的结构发生了一点点变化。所以需要重构一下函数。而且，fs.stat方法具有比fs.exsits方法更多的功能。我们直接替代掉它。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var server = http.createServer(function(request, response) {
+<br/>var pathname = url.parse(request.url).pathname;
+<br/>    if (pathname.slice(-1) === “/”) {
+<br/>        pathname = pathname + config.Welcome.file;
+<br/>    }
+<br/>    var realPath = path.join(“assets”, path.normalize(pathname.replace(/…/g, “”)));
+<br/>
+<br/>    var pathHandle = function (realPath) {
+<br/>        fs.stat(realPath, function (err, stats) {
+<br/>            if (err) {
+<br/>                response.writeHead(404, “Not Found”, {‘Content-Type’: ‘text/plain’});
+<br/>                response.write(“This request URL " + pathname + " was not found on this server.”);
+<br/>                response.end();
+<br/>            } else {
+<br/>                if (stats.isDirectory()) {
+<br/>                    realPath = path.join(realPath, “/”, config.Welcome.file);
+<br/>                    pathHandle(realPath);
+<br/>                } else {
+<br/>                    var ext = path.extname(realPath);
+<br/>                    ext = ext ? ext.slice(1) : ‘unknown’;
+<br/>                    var contentType = mime[ext] || “text/plain”;
+<br/>                    response.setHeader(“Content-Type”, contentType);
+<br/>
+<br/>                    var lastModified = stats.mtime.toUTCString();
+<br/>                    var ifModifiedSince = “If-Modified-Since”.toLowerCase();
+<br/>                    response.setHeader(“Last-Modified”, lastModified);
+<br/>
+<br/>                    if (ext.match(config.Expires.fileMatch)) {
+<br/>                        var expires = new Date();
+<br/>                        expires.setTime(expires.getTime() + config.Expires.maxAge * 1000);
+<br/>                        response.setHeader(“Expires”, expires.toUTCString());
+<br/>                        response.setHeader(“Cache-Control”, “max-age=” + config.Expires.maxAge);
+<br/>                    }
+<br/>
+<br/>                    if (request.headers[ifModifiedSince] && lastModified == request.headers[ifModifiedSince]) {
+<br/>                        response.writeHead(304, “Not Modified”);
+<br/>                        response.end();
+<br/>                    } else {
+<br/>                        var raw = fs.createReadStream(realPath);
+<br/>                        var acceptEncoding = request.headers[‘accept-encoding’] || “”;
+<br/>                        var matched = ext.match(config.Compress.match);
+<br/>
+<br/>                        if (matched && acceptEncoding.match(/\bgzip\b/)) {
+<br/>                            response.writeHead(200, “Ok”, {‘Content-Encoding’: ‘gzip’});
+<br/>                            raw.pipe(zlib.createGzip()).pipe(response);
+<br/>                        } else if (matched && acceptEncoding.match(/\bdeflate\b/)) {
+<br/>                            response.writeHead(200, “Ok”, {‘Content-Encoding’: ‘deflate’});
+<br/>                            raw.pipe(zlib.createDeflate()).pipe(response);
+<br/>                        } else {
+<br/>                            response.writeHead(200, “Ok”);
+<br/>                            raw.pipe(response);
+<br/>                        }
+<br/>                    }
+<br/>                }
+<br/>            }
+<br/>        });
+<br/>    };
+<br/>
+<br/>    pathHandle(realPath);
+<br/>});</pre>
+<br/>就这样。一个各方面都比较完整的静态文件服务器就这样打造完毕。
+<br/><h3>Range支持，搞定媒体断点支持</h3>
+<br/>关于http1.1中的Range定义，可以参见这两篇文章：
+<br/><ul>
+    <br/>	<li><a href=“http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html”>http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html</a></li>
+    <br/>	<li><a href=“http://labs.apache.org/webarch/http/draft-fielding-http/p5-range.html”>http://labs.apache.org/webarch/http/draft-fielding-http/p5-range.html</a></li>
+    <br/></ul>
+<br/>接下来，我将简单地介绍一下range的作用和其定义。
+<br/>
+<br/>当用户在听一首歌的时候，如果听到一半（网络下载了一半），网络断掉了，用户需要继续听的时候，文件服务器不支持断点的话，则用户需要重新下载这个文件。而Range支持的话，客户端应该记录了之前已经读取的文件范围，网络恢复之后，则向服务器发送读取剩余Range的请求，服务端只需要发送客户端请求的那部分内容，而不用整个文件发送回客户端，以此节省网络带宽。
+<br/>
+<br/>那么HTTP1.1规范的Range是怎样一个约定呢。
+<br/><ol>
+    <br/>	<li>如果Server支持Range，首先就要告诉客户端，咱支持Range，之后客户端才可能发起带Range的请求。这里套用唐僧的一句话，你不说我怎么知道呢。
+    <br/>response.setHeader(‘Accept-Ranges’, ‘bytes’);</li>
+    <br/>	<li>Server通过请求头中的Range: bytes=0-xxx来判断是否是做Range请求，如果这个值存在而且有效，则只发回请求的那部分文件内容，响应的状态码变成206，表示Partial Content，并设置Content-Range。如果无效，则返回416状态码，表明Request Range Not Satisfiable（<a href=“http://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html%23sec10.4.17”>http://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html#sec10.4.17</a> ）。如果不包含Range的请求头，则继续通过常规的方式响应。</li>
+    <br/>	<li>有必要对Range请求做一下解释。</li>
+    <br/></ol>
+<br/><pre class=“brush: bash; gutter: true; first-line: 1”>ranges-specifier = byte-ranges-specifier
+<br/>byte-ranges-specifier = bytes-unit “=” byte-range-set
+<br/>byte-range-set  = 1#( byte-range-spec | suffix-byte-range-spec )
+<br/>byte-range-spec = first-byte-pos “-” [last-byte-pos]
+<br/>first-byte-pos  = 1DIGIT
+<br/>last-byte-pos   = 1*DIGIT</pre>
+<br/>上面这段定义来自w3定义的协议<a href=“http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.35”>http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.35</a>。大致可以表述为Range: bytes=[start]-[end][,[start]-[end]]。简言之有以下几种情况：
+<br/><ul>
+    <br/>	<li>bytes=0-99，从0到99之间的数据字节。</li>
+    <br/>	<li>bytes=-100，文件的最后100个字节。</li>
+    <br/>	<li>bytes=100-，第100个字节开始之后的所有字节。</li>
+    <br/>	<li>bytes=0-99,200-299，从0到99之间的数据字节和200到299之间的数据字节。</li>
+    <br/></ul>
+<br/>那么，我们就开始实现吧。首先判断Range请求和检测其是否有效。为了保持代码干净，我们封装一个parseRange方法吧，这个方法属于util性质的，那么我们放进utils.js文件吧。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var utils = require("./utils");</pre>
+<br/>我们暂且不支持多区间吧。于是遇见逗号，就报416错误吧。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>exports.parseRange = function (str, size) {
+<br/>    if (str.indexOf(",") != -1) {
+<br/>        return;
+<br/>    }
+<br/>
+<br/>    var range = str.split("-"),
+<br/>        start = parseInt(range[0], 10),
+<br/>        end = parseInt(range[1], 10);
+<br/>
+<br/>    // Case: -100
+<br/>    if (isNaN(start)) {
+<br/>        start = size - end;
+<br/>        end = size - 1;
+<br/>    // Case: 100-
+<br/>    } else if (isNaN(end)) {
+<br/>        end = size - 1;
+<br/>    }
+<br/>
+<br/>    // Invalid
+<br/>    if (isNaN(start) || isNaN(end) || start > end || end > size) {
+<br/>        return;
+<br/>    }
+<br/>
+<br/>    return {start: start, end: end};
+<br/>};</pre>
+<br/>如果满足Range的条件，则为响应添加上Content-Range和修改掉Content-Lenth。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>response.setHeader(“Content-Range”, “bytes " + range.start + “-” + range.end + “/” + stats.size);
+<br/>response.setHeader(“Content-Length”, (range.end - range.start + 1));</pre>
+<br/>这里很荣幸的是Node的读文件流原生支持读取文件range。
+<br/>
+<br/>var raw = fs.createReadStream(realPath, {“start”: range.start, “end”: range.end});
+<br/>
+<br/>并且设置状态码为206。
+<br/>
+<br/>由于选取Range之后，依然还是需要经过GZip的。于是代码已经有点面条的味道了。重构一下吧。于是代码大致如此：
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>var compressHandle = function (raw, statusCode, reasonPhrase) {
+<br/>        var stream = raw;
+<br/>        var acceptEncoding = request.headers[‘accept-encoding’] || “”;
+<br/>        var matched = ext.match(config.Compress.match);
+<br/>
+<br/>        if (matched && acceptEncoding.match(/\bgzip\b/)) {
+<br/>            response.setHeader(“Content-Encoding”, “gzip”);
+<br/>            stream = raw.pipe(zlib.createGzip());
+<br/>        } else if (matched && acceptEncoding.match(/\bdeflate\b/)) {
+<br/>            response.setHeader(“Content-Encoding”, “deflate”);
+<br/>            stream = raw.pipe(zlib.createDeflate());
+<br/>        }
+<br/>        response.writeHead(statusCode, reasonPhrase);
+<br/>        stream.pipe(response);
+<br/>    };
+<br/>
+<br/>if (request.headers[“range”]) {
+<br/>    var range = utils.parseRange(request.headers[“range”], stats.size);
+<br/>    if (range) {
+<br/>        response.setHeader(“Content-Range”, “bytes " + range.start + “-” + range.end + “/” + stats.size);
+<br/>        response.setHeader(“Content-Length”, (range.end - range.start + 1));
+<br/>        var raw = fs.createReadStream(realPath, {“start”: range.start, “end”: range.end});
+<br/>        compressHandle(raw, 206, “Partial Content”);
+<br/>    } else {
+<br/>        response.removeHeader(“Content-Length”);
+<br/>        response.writeHead(416, “Request Range Not Satisfiable”);
+<br/>        response.end();
+<br/>    }
+<br/>} else {
+<br/>    var raw = fs.createReadStream(realPath);
+<br/>    compressHandle(raw, 200, “Ok”);
+<br/>}</pre>
+<br/>通过curl --header “Range:0-20” -i http://localhost:8000/index.html请求测试一番试试。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>HTTP/1.1 206 Partial Content
+<br/>Server: Node/V5
+<br/>Accept-Ranges: bytes
+<br/>Content-Type: text/html
+<br/>Content-Length: 21
+<br/>Last-Modified: Fri, 11 Nov 2011 19:14:51 GMT
+<br/>Content-Range: bytes 0-20/54
+<br/>Connection: keep-alive
+<br/>
+<br/><html>
+<br/><body>
+<br/><h1>I</pre>
+<br/>
+<br/>
+<br/>index.html文件并没有被整个发送给客户端。这里之所以没有完全的21个字节，是因为\t和\r都各算一个字节。
+<br/>
+<br/>再用curl --header “Range:0-100” -i http://localhost:8000/index.html反向测试一下吧。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>HTTP/1.1 416 Request Range Not Satisfiable
+<br/>Server: Node/V5
+<br/>Accept-Ranges: bytes
+<br/>Content-Type: text/html
+<br/>Last-Modified: Fri, 11 Nov 2011 19:14:51 GMT
+<br/>Connection: keep-alive
+<br/>Transfer-Encoding: chunked</pre>
+<br/>嗯，要的就是这个效果。至此，Range支持完成，这个静态文件服务器支持一些流媒体文件，表示没有压力啦。
+<br/><h3>后记</h3>
+<br/>由于本章的目的是完成一个纯静态的文件服务器，所以不需要涉及到cookie，session等动态服务器的特性。下一章会讲述如何打造一个动态服务器。
+<br/>
+<br/>最后再附赠一个小技巧。看到别人家的服务器都响应一个：
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>Server: nginx</pre>
+<br/>觉得老牛逼了。那么我们自己也搞一个吧。
+<br/><pre class=“brush: javascript; gutter: true; first-line: 1”>response.setHeader(“Server”, “Node/V5”);</pre>
+<br/>嗯。就这么简单。
+<br/>
+<br/>全文的最终代码可以从这里下载： <a href=“http://vdisk.weibo.com/s/15iUP”>http://vdisk.weibo.com/s/15iUP</a>
+<br/>
+<br/>项目目前已经发布到github上，同学们可以持续关注此项目的进展。github地址是：<a href=“https://github.com/JacksonTian/ping” target=”_blank”>https://github.com/JacksonTian/ping</a>
+<br/>
+<br/>
+<br/>
+<br/>
+</body>
+</html>
